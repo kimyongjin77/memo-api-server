@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from email import message
 from http import HTTPStatus
 import http
 from flask import request
@@ -12,7 +13,7 @@ from email_validator import validate_email, EmailNotValidError
 from utils import check_password, hash_password
 
 #회원관리
-# 경로 : /users
+# 경로 : /user
 class User(Resource):
     # 회원가입저장
     # 메소드 : post
@@ -282,26 +283,388 @@ class Memo(Resource):
 
     #조회
     # 메소드 : get
-    # 데이터 : header:user_id토큰, body=검색조건?
+    # 데이터 : header:user_id토큰, body=제목검색어
     @jwt_required()
     def get(self):
-        pass
+        #1.요청 body에서 데이터를 가져온다.
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "sch_title": "1",
+        #     "offset": "0",
+        #     "limit": "3",
+        # }
+        data=request.get_json()
+        #print(data)
+
+        sch_title=data['sch_title']
+        offset=data['offset']
+        limit=data['limit']
+
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        #4.메모 조회
+        try:
+            # db접속
+            connection = get_connection()
+
+            query='''select memo_id, title, todo_date, contents, created_at, updated_at
+                    from memo
+                    where user_id=%s
+                      and title like '%'''+sch_title+'''%' 
+                    order by todo_date desc 
+                    limit '''+offset+''','''+limit+''';'''
+
+            #record=(user_id, offset, limit)
+            record=(user_id,)
+
+            # 커서(딕셔너리 셋으로 가져와라)
+            #select문은 dictionary=True 한다.
+            cursor=connection.cursor(dictionary=True)
+
+            # 실행
+            cursor.execute(query, record)
+            
+            # 데이터fetch : select문은 아래함수를 이용해서 데이터를 가져온다.
+            result_list=cursor.fetchall()
+            #print(result_list)
+
+            #중요! db에서 가져온 timestamp데이터타입은 파이썬의 datetime으로 자동 변경된다.
+            #이 데이터는 json으로 바로 보낼 수 없으므로 문자열로 바꿔서 다시 저장해서 보낸다.
+            i=0
+            for record in result_list:
+                result_list[i]['todo_date'] = record['todo_date'].isoformat()
+                result_list[i]['created_at'] = record['created_at'].isoformat()
+                result_list[i]['updated_at'] = record['updated_at'].isoformat()
+                i=i+1
+
+            return {"result":"success",
+                    "count":len(result_list),
+                    "result_list":result_list}, HTTPStatus.OK
+
+        except mysql.connector.Error as e:
+            print(e)
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+
+        finally:
+            # 자원해제
+            #print('finally')
+            cursor.close()
+            connection.close()
 
     #수정
     # 메소드 : put
     # 데이터 : header:user_id토큰, body=메모id, 제목, 일시분, 내용
     @jwt_required()
     def put(self):
-        pass
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "memo_id": 1,
+        #     "title": "메모1",
+        #     "todo_date": "시간은 어찌",
+        #     "contents": "할일은 하자.."
+        # }
+        data=request.get_json()
+        #print(data)
+
+        memo_id=data['memo_id']
+        title=data['title']
+        todo_date=data['todo_date']
+        contents=data['contents']
+
+        #str_datetime='2021-07-18 12:15:33'
+        format='%Y-%m-%d %H:%M:%S'
+        todo_date=datetime.strptime(todo_date,format)
+
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        try:
+            # 데이터 인서트
+            # db접속
+            connection = get_connection()
+
+            # 쿼리작성
+            query='''update memo
+                    set title=%s
+                        ,todo_date=%s
+                        ,contents=%s
+                    where memo_id=%s
+                      and user_id=%s
+                    ;'''
+
+            record=(title, todo_date, contents, memo_id, user_id)
+
+            # 커서
+            cursor=connection.cursor()
+
+            # 실행
+            cursor.execute(query, record)
+
+            # 커밋
+            connection.commit()
+
+            if cursor.rowcount >= 1:
+                return {"result":"success"}, HTTPStatus.OK
+            else:
+                return {"result":"failed", "message":"메모가 존재하지 않거나 본인의 메모인지 확인바랍니다."}, HTTPStatus.BAD_REQUEST
+
+        except mysql.connector.Error as e:
+            print(e)
+            connection.rollback()
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+        
+        finally:
+            cursor.close()
+            connection.close()
 
     #삭제
     # 메소드 : delete
     # 데이터 : header:user_id토큰, body=메모id
     @jwt_required()
     def delete(self):
-        pass
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "memo_id": 1
+        # }
+        data=request.get_json()
+        #print(data)
 
+        memo_id=data['memo_id']
 
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        try:
+            # 데이터 인서트
+            # db접속
+            connection = get_connection()
+
+            # 쿼리작성
+            query='''delete from memo
+                    where memo_id=%s
+                      and user_id=%s
+                    ;'''
+
+            record=(memo_id, user_id)
+
+            # 커서
+            cursor=connection.cursor()
+
+            # 실행
+            cursor.execute(query, record)
+
+            # 커밋
+            connection.commit()
+
+            if cursor.rowcount >= 1:
+                return {"result":"success"}, HTTPStatus.OK
+            else:
+                return {"result":"failed", "message":"메모가 존재하지 않거나 본인의 메모인지 확인바랍니다."}, HTTPStatus.BAD_REQUEST
+
+        except mysql.connector.Error as e:
+            print(e)
+            connection.rollback()
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+        
+        finally:
+            cursor.close()
+            connection.close()
+
+#친구관리
+# 경로 : /follow
+class Follow(Resource):
+    #친구맺기
+    # 메소드 : post
+    # 데이터 : header:user_id토큰, body=followee회원ID
+    @jwt_required()
+    def post(self):
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "followee_id": 1
+        # }
+        data=request.get_json()
+        #print(data)
+
+        followee_id=data['followee_id']
+
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        # print(type(followee_id))
+        # print(type(user_id))
+
+        if str(followee_id)==str(user_id):
+            print('return')
+            return {"error":"자신을 친구맺기 할 수 없습니다."}, HTTPStatus.BAD_REQUEST
+
+        try:
+            # 데이터 인서트
+            # db접속
+            connection = get_connection()
+
+            # 쿼리작성
+            query='''insert into follow
+                    (follow_id, followee_id)
+                    values
+                    (%s,%s)
+                    ; '''
+
+            record=(user_id, followee_id)
+
+            # 커서
+            cursor=connection.cursor()
+
+            # 실행
+            cursor.execute(query, record)
+
+            # 커밋
+            connection.commit()
+
+            return {"result":"success"}, HTTPStatus.OK
+
+        except mysql.connector.Error as e:
+            print(e)
+            connection.rollback()
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+        
+        finally:
+            cursor.close()
+            connection.close()
+
+    #친구메모조회
+    # 메소드 : get
+    # 데이터 : header:user_id토큰, body=followee회원명검색어, 제목검색어
+    @jwt_required()
+    def get(self):
+        #1.요청 body에서 데이터를 가져온다.
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "sch_followee_name": "1",
+        #     "sch_title": "1",
+        #     "offset": "0",
+        #     "limit": "3",
+        # }
+        data=request.get_json()
+        #print(data)
+
+        sch_followee_name=data['sch_followee_name']
+        sch_title=data['sch_title']
+        offset=data['offset']
+        limit=data['limit']
+
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        #친구메모 조회
+        try:
+            # db접속
+            connection = get_connection()
+
+            query='''select b.name,  c.title, c.todo_date, c.contents
+                    from follow a join users b
+                        on a.followee_id=b.user_id join memo c
+                        on b.user_id=c.user_id
+                    where a.follow_id=%s
+                      and b.name like '%'''+sch_followee_name+'''%'
+                      and c.title like '%'''+sch_title+'''%' 
+                    order by c.todo_date desc 
+                    limit %s, %s
+                    ;'''
+                    
+            record=(user_id, offset, limit)
+            #record=(user_id, )
+
+            # 커서(딕셔너리 셋으로 가져와라)
+            #select문은 dictionary=True 한다.
+            cursor=connection.cursor(dictionary=True)
+
+            # 실행
+            cursor.execute(query, record)
+            
+            # 데이터fetch : select문은 아래함수를 이용해서 데이터를 가져온다.
+            result_list=cursor.fetchall()
+            #print(result_list)
+
+            #중요! db에서 가져온 timestamp데이터타입은 파이썬의 datetime으로 자동 변경된다.
+            #이 데이터는 json으로 바로 보낼 수 없으므로 문자열로 바꿔서 다시 저장해서 보낸다.
+            i=0
+            for record in result_list:
+                result_list[i]['todo_date'] = record['todo_date'].isoformat()
+                i=i+1
+
+            return {"result":"success",
+                    "count":len(result_list),
+                    "result_list":result_list}, HTTPStatus.OK
+
+        except mysql.connector.Error as e:
+            print(e)
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+
+        finally:
+            # 자원해제
+            #print('finally')
+            cursor.close()
+            connection.close()
+
+    #친구끊기
+    # 메소드 : delete
+    # 데이터 : header:user_id토큰, body=followee회원ID
+    @jwt_required()
+    def delete(self):
+        #클라이언트에서 보낸 body의 json데이터를 받아오는 코드
+        # {
+        #     "followee_id": 1
+        # }
+        data=request.get_json()
+        #print(data)
+
+        followee_id=data['followee_id']
+
+        #user_id를 create_access_token(user_id)로 암호화 했다.
+        #인증토큰을 복호화 한다.
+        user_id=get_jwt_identity()
+
+        try:
+            # 데이터 인서트
+            # db접속
+            connection = get_connection()
+
+            # 쿼리작성
+            query='''delete from follow
+                    where follow_id=%s
+                      and followee_id=%s
+                    ;'''
+
+            record=(user_id, followee_id)
+
+            # 커서
+            cursor=connection.cursor()
+
+            # 실행
+            cursor.execute(query, record)
+
+            # 커밋
+            connection.commit()
+
+            if cursor.rowcount >= 1:
+                return {"result":"success"}, HTTPStatus.OK
+            else:
+                return {"result":"failed", "message":"친구가 존재하지 않거나 본인의 친구인지 확인바랍니다."}, HTTPStatus.BAD_REQUEST
+
+        except mysql.connector.Error as e:
+            print(e)
+            connection.rollback()
+            return {"error":str(e)}, HTTPStatus.SERVICE_UNAVAILABLE
+        
+        finally:
+            cursor.close()
+            connection.close()
 
 
 
